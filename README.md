@@ -57,7 +57,10 @@ Checklist keys: `↑`/`↓` (or `k`/`j`) move, `space` toggles, `a` selects all,
 npm install
 npm test          # node:test, no Pi required
 npm run typecheck # tsc --noEmit
+npm run test:e2e  # real Pi over RPC: runs /delete-session and checks the file is gone
 ```
+
+`npm run test:e2e` needs the `pi` binary on `PATH` and a Pi build with the RPC extension UI sub-protocol. It answers the confirmation dialog over the wire and fails on any `extension_error` event, so stale-context regressions surface in CI instead of in your terminal.
 
 Try it locally without publishing:
 
@@ -65,7 +68,7 @@ Try it locally without publishing:
 pi -e /path/to/pi-delete-session
 ```
 
-`src/handlers.ts` holds the command logic behind an injected host, `src/session-files.ts` holds the filesystem helpers, and `extensions/delete-session.ts` is the thin wiring into Pi.
+`src/handlers.ts` holds the command logic behind an injected host, `src/session-files.ts` holds the filesystem helpers, and `extensions/delete-session.ts` is the thin wiring into Pi. Never touch the command context after `newSession()`: the replacement makes it stale, and Pi throws.
 
 ## License
 
