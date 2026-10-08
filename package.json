@@ -1,6 +1,6 @@
 {
   "name": "@fahrizkyputra/pi-delete-session",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Delete the active Pi session (and start a fresh one), or multi-select saved sessions to clean up. Confirmation first, trash-safe deletion.",
   "keywords": [
     "pi-package",
