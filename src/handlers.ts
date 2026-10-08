@@ -7,6 +7,7 @@
 
 import { basename } from "node:path";
 import type { SessionInfo } from "@earendil-works/pi-coding-agent";
+import { countFavorites, FAVORITE_MARKER, isFavoriteName, isFavoriteSession } from "./favorites.ts";
 import {
 	deleteSessionFile,
 	filterSessions,
@@ -36,6 +37,8 @@ export interface DeleteSessionHost {
 	currentSessionPath: string | undefined;
 	/** Number of entries in the active session. */
 	currentSessionEntryCount: number;
+	/** Display name of the active session, marker included. */
+	currentSessionName: string | undefined;
 	listSessions(scope: SessionScope): Promise<SessionInfo[]>;
 	/**
 	 * Start a replacement session and run `after` against a fresh host bound to
@@ -57,6 +60,9 @@ export const HELP_TEXT = [
 	"",
 	"In the list: tab switches between search and selection, space toggles a",
 	"session, `a` toggles everything the search shows, enter deletes.",
+	"",
+	"Sessions marked ★ (favorites from pi-session-favorites) ask for a second",
+	"confirmation before they are removed.",
 	"",
 	"Deletion asks for confirmation first and moves files to the OS trash when",
 	"the `trash` CLI is available. A new session starts when the active session",
@@ -117,6 +123,21 @@ export async function deleteCurrentSession(host: DeleteSessionHost): Promise<voi
 	if (!confirmed) {
 		host.ui.notify("Cancelled. Session kept.", "info");
 		return;
+	}
+
+	if (isFavoriteName(host.currentSessionName)) {
+		const favoritesConfirmed = await host.ui.confirm(
+			"This session is a favorite (★)",
+			[
+				host.currentSessionName ?? FAVORITE_MARKER,
+				"",
+				"Favorites are the sessions you marked to come back to. Deleting it removes the ★ too.",
+			].join("\n"),
+		);
+		if (!favoritesConfirmed) {
+			host.ui.notify("Cancelled — the favorite is kept.", "info");
+			return;
+		}
 	}
 
 	const result = await host.startNewSession(async (fresh) => {
@@ -189,6 +210,22 @@ export async function deleteSessionsWithPicker(host: DeleteSessionHost, options:
 	if (!confirmed) {
 		host.ui.notify("Cancelled. No sessions deleted.", "info");
 		return;
+	}
+
+	const favoriteCount = countFavorites(selected);
+	if (favoriteCount > 0) {
+		const favoritesConfirmed = await host.ui.confirm(
+			`${favoriteCount} favorite${favoriteCount === 1 ? "" : "s"} selected (★)`,
+			[
+				summarizeSessions(selected.filter(isFavoriteSession)),
+				"",
+				"Deleting these removes the markers you set to come back to.",
+			].join("\n"),
+		);
+		if (!favoritesConfirmed) {
+			host.ui.notify("Cancelled — favorites kept, nothing deleted.", "info");
+			return;
+		}
 	}
 
 	const currentPath = host.currentSessionPath;

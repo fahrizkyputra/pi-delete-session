@@ -29,6 +29,7 @@ interface StaleState {
 
 interface CtxOptions {
 	sessionPath?: string;
+	sessionName?: string;
 	sessionDir?: string;
 	notifications: string[];
 	confirms: string[];
@@ -66,6 +67,7 @@ function createCtx(state: StaleState, options: CtxOptions): any {
 		},
 		sessionManager: {
 			getSessionFile: guard("sessionManager.getSessionFile", () => options.sessionPath),
+			getSessionName: guard("sessionManager.getSessionName", () => options.sessionName),
 			getEntries: guard("sessionManager.getEntries", () => [{}, {}, {}]),
 			getSessionDir: guard("sessionManager.getSessionDir", () => options.sessionDir ?? "/tmp"),
 		},
