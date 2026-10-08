@@ -55,6 +55,7 @@ Selections survive filtering, so you can search `auth`, tick one session, search
 ## What happens on delete
 
 - **Confirmation first.** The current-session dialog shows the session file, its entry count, and its size. Bulk delete lists every selected session before touching anything.
+- **Favorites are protected by a second question.** Sessions marked `★` (see [`pi-session-favorites`](https://pi.dev/packages/pi-session-favorites)) trigger another confirmation before they are removed; declining it cancels the whole deletion, so nothing is lost by accident.
 - **Trash-safe.** Files are moved to the OS trash with the `trash` CLI when it is installed, and unlinked otherwise. Same behavior as Pi's built-in picker.
 - **No orphan writes.** When the active session is deleted, a new session starts *first*, so Pi never re-creates the file you just deleted.
 - **Works without a TUI.** In RPC mode the bulk flow falls back to one-by-one selection dialogs.
@@ -63,6 +64,7 @@ Selections survive filtering, so you can search `auth`, tick one session, search
 
 - Deleting sessions is permanent from Pi's point of view. Prefer `/export` if you might want the transcript later.
 - `/delete-session list` reads sessions through Pi's own `SessionManager`, so custom `sessionDir` settings and project grouping behave exactly like `/resume`.
+- Favorite detection is a plain check on the `★ ` name prefix, so this package works whether or not `pi-session-favorites` is installed.
 - The search field is Pi's own `Input` component, so typing, pasting, word-delete, and IME behavior match the rest of the terminal UI.
 
 ## Development

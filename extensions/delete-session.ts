@@ -35,6 +35,7 @@ function hostFromContext(ctx: ExtensionCommandContext): DeleteSessionHost {
 		},
 		currentSessionPath: ctx.sessionManager.getSessionFile(),
 		currentSessionEntryCount: ctx.sessionManager.getEntries().length,
+		currentSessionName: ctx.sessionManager.getSessionName(),
 		listSessions: async (scope) => {
 			try {
 				return await listSessions({

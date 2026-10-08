@@ -50,7 +50,9 @@ interface MockOptions {
 	hasUI?: boolean;
 	currentSessionPath?: string;
 	sessions?: SessionInfo[];
-	confirmReply?: boolean;
+	/** Single answer, or one answer per confirmation in order. */
+	confirmReply?: boolean | boolean[];
+	currentSessionName?: string;
 	selectReplies?: (string | undefined)[];
 	picked?: string[] | undefined;
 	cancelNewSession?: boolean;
@@ -61,6 +63,9 @@ function createHarness(options: MockOptions = {}) {
 	const confirmTitles: string[] = [];
 	const stats = { newSessionCalls: 0, fileExistedAtNewSession: undefined as boolean | undefined };
 	const sessions = options.sessions ?? [];
+	const confirmReplies = Array.isArray(options.confirmReply)
+		? [...options.confirmReply]
+		: undefined;
 	let selectIndex = 0;
 
 	const host: DeleteSessionHost = {
@@ -69,7 +74,8 @@ function createHarness(options: MockOptions = {}) {
 		ui: {
 			confirm: async (title) => {
 				confirmTitles.push(title);
-				return options.confirmReply ?? true;
+				if (confirmReplies) return confirmReplies.shift() ?? false;
+				return typeof options.confirmReply === "boolean" ? options.confirmReply : true;
 			},
 			notify: (message, type) => {
 				notifications.push({ message, type });
@@ -81,6 +87,7 @@ function createHarness(options: MockOptions = {}) {
 		},
 		currentSessionPath: options.currentSessionPath,
 		currentSessionEntryCount: 7,
+		currentSessionName: options.currentSessionName,
 		listSessions: async () => sessions,
 		startNewSession: async (after) => {
 			stats.newSessionCalls++;
@@ -310,4 +317,106 @@ test("runDeleteSessionCommand with no arguments targets the current session", as
 
 	assert.match(confirmTitles[0] ?? "", /Delete this session\?/);
 	assert.equal(existsSync(current), false);
+});
+
+test("a favorite session needs a second confirmation", async () => {
+	const dir = tempDir();
+	const path = makeSessionFile(dir, "current.jsonl");
+	const { host, notifications, stats, confirmTitles } = createHarness({
+		currentSessionPath: path,
+		currentSessionName: "★ Fix auth",
+		confirmReply: [true, true],
+	});
+
+	await deleteCurrentSession(host);
+
+	assert.equal(existsSync(path), false);
+	assert.equal(stats.newSessionCalls, 1);
+	assert.equal(confirmTitles.length, 2);
+	assert.match(confirmTitles[1] ?? "", /favorite \(★\)/);
+});
+
+test("declining the favorite confirmation keeps the session", async () => {
+	const dir = tempDir();
+	const path = makeSessionFile(dir, "current.jsonl");
+	const { host, notifications, stats, confirmTitles } = createHarness({
+		currentSessionPath: path,
+		currentSessionName: "★ Fix auth",
+		confirmReply: [true, false],
+	});
+
+	await deleteCurrentSession(host);
+
+	assert.equal(existsSync(path), true);
+	assert.equal(stats.newSessionCalls, 0);
+	assert.equal(confirmTitles.length, 2);
+	assert.match(notifications.at(-1)?.message ?? "", /favorite is kept/);
+});
+
+test("a session without the marker asks only once", async () => {
+	const dir = tempDir();
+	const path = makeSessionFile(dir, "current.jsonl");
+	const { host, confirmTitles } = createHarness({ currentSessionPath: path, currentSessionName: "Fix auth" });
+
+	await deleteCurrentSession(host);
+
+	assert.equal(confirmTitles.length, 1);
+});
+
+test("bulk delete asks again when favorites are selected", async () => {
+	const dir = tempDir();
+	const favorite = makeSessionFile(dir, "favorite.jsonl");
+	const plain = makeSessionFile(dir, "plain.jsonl");
+	const sessions = [
+		makeSession(favorite, { name: "★ Deploy script" }),
+		makeSession(plain, { name: "notes" }),
+	];
+	const { host, notifications, confirmTitles } = createHarness({
+		sessions,
+		picked: [favorite, plain],
+		confirmReply: [true, false],
+	});
+
+	await deleteSessionsWithPicker(host, { scope: "project" });
+
+	assert.equal(existsSync(favorite), true, "declining the second dialog cancels everything");
+	assert.equal(existsSync(plain), true);
+	assert.equal(confirmTitles.length, 2);
+	assert.match(confirmTitles[1] ?? "", /1 favorite selected/);
+	assert.match(notifications.at(-1)?.message ?? "", /favorites kept/);
+});
+
+test("bulk delete proceeds when the favorite confirmation is accepted", async () => {
+	const dir = tempDir();
+	const favorite = makeSessionFile(dir, "favorite.jsonl");
+	const plain = makeSessionFile(dir, "plain.jsonl");
+	const sessions = [
+		makeSession(favorite, { name: "★ Deploy script" }),
+		makeSession(plain, { name: "notes" }),
+	];
+	const { host, notifications, confirmTitles } = createHarness({
+		sessions,
+		picked: [favorite, plain],
+		confirmReply: [true, true],
+	});
+
+	await deleteSessionsWithPicker(host, { scope: "project" });
+
+	assert.equal(existsSync(favorite), false);
+	assert.equal(existsSync(plain), false);
+	assert.equal(confirmTitles.length, 2);
+	assert.match(notifications.at(-1)?.message ?? "", /2 sessions deleted/);
+});
+
+test("bulk delete without favorites asks once", async () => {
+	const dir = tempDir();
+	const path = makeSessionFile(dir, "plain.jsonl");
+	const { host, confirmTitles } = createHarness({
+		sessions: [makeSession(path, { name: "notes" })],
+		picked: [path],
+	});
+
+	await deleteSessionsWithPicker(host, { scope: "project" });
+
+	assert.equal(confirmTitles.length, 1);
 });
