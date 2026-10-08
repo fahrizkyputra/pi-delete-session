@@ -45,15 +45,18 @@ export interface DeleteSessionHost {
 	/** Interactive multi-select picker. Only called in TUI mode. */
 	pickSessions(
 		sessions: SessionInfo[],
-		options: { title: string; currentSessionPath?: string },
+		options: { title: string; currentSessionPath?: string; initialQuery?: string },
 	): Promise<string[] | undefined>;
 }
 
 export const HELP_TEXT = [
 	"/delete-session — delete the current session",
-	"/delete-session list — pick saved sessions to delete",
+	"/delete-session list — pick saved sessions to delete (type to search)",
 	"/delete-session list --all — pick from every project",
-	"/delete-session <query> — pick sessions matching a search term",
+	"/delete-session <query> — open the list with the search pre-filled",
+	"",
+	"In the list: tab switches between search and selection, space toggles a",
+	"session, `a` toggles everything the search shows, enter deletes.",
 	"",
 	"Deletion asks for confirmation first and moves files to the OS trash when",
 	"the `trash` CLI is available. A new session starts when the active session",
@@ -143,36 +146,37 @@ export async function deleteSessionsWithPicker(host: DeleteSessionHost, options:
 	}
 
 	const sessions = await host.listSessions(options.scope);
-	const matched = options.query ? filterSessions(sessions, options.query) : sessions;
+	const query = options.query?.trim();
 
-	if (matched.length === 0) {
-		host.ui.notify(
-			options.query
-				? `No sessions match "${options.query}".`
-				: "No saved sessions found.",
-			"info",
-		);
+	if (sessions.length === 0) {
+		host.ui.notify("No saved sessions found.", "info");
+		return;
+	}
+
+	// In the TUI the checklist filters live, so it gets every candidate; other
+	// modes narrow the list up front because their dialogs cannot search.
+	const searchable = host.mode === "tui" ? sessions : query ? filterSessions(sessions, query) : sessions;
+	if (searchable.length === 0) {
+		host.ui.notify(`No sessions match "${query}".`, "info");
 		return;
 	}
 
 	const picked =
 		host.mode === "tui"
-			? await host.pickSessions(matched, {
-					title: options.query
-						? `Sessions matching "${options.query}"`
-						: options.scope === "all"
-							? "All saved sessions"
-							: "Sessions in this project",
+			? await host.pickSessions(searchable, {
+					title:
+						options.scope === "all" ? "All saved sessions" : "Sessions in this project",
 					currentSessionPath: host.currentSessionPath,
+					initialQuery: query,
 				})
-			: await pickOneByOne(host, matched);
+			: await pickOneByOne(host, searchable);
 
 	if (!picked || picked.length === 0) {
 		host.ui.notify("Nothing selected. No sessions deleted.", "info");
 		return;
 	}
 
-	const selected = matched.filter((session) => picked.some((path) => isSamePath(path, session.path)));
+	const selected = sessions.filter((session) => picked.some((path) => isSamePath(path, session.path)));
 	if (selected.length === 0) {
 		host.ui.notify("Nothing selected. No sessions deleted.", "info");
 		return;
