@@ -21,22 +21,35 @@ pi -e npm:@fahrizkyputra/pi-delete-session
 | Command | What it does |
 |---|---|
 | `/delete-session` | Deletes the **active** session after a confirmation, then starts a fresh session |
-| `/delete-session list` | Opens a checklist of sessions in the current project; `space` toggles, `enter` deletes |
+| `/delete-session list` | Opens a searchable checklist of sessions in the current project |
 | `/delete-session list --all` | Same checklist, across every project |
-| `/delete-session <query>` | Opens the checklist pre-filtered to sessions matching a search term |
+| `/delete-session <query>` | Opens the checklist with the search already filled in |
 | `/delete-session help` | Prints the usage summary |
 
-Checklist keys: `↑`/`↓` (or `k`/`j`) move, `space` toggles, `a` selects all, `enter` confirms, `esc` cancels.
+### Checklist keys
+
+| Key | Action |
+|---|---|
+| type anything | Filters as you type: matches session name, first message, transcript text, or cwd |
+| `↑` / `↓` | Move the highlight |
+| `tab` | Switch between searching and selecting |
+| `space` | Toggle the highlighted session (select mode) |
+| `a` | Toggle every session the current search shows (select mode) |
+| `enter` | Delete the selected sessions |
+| `esc` | Clear the search, then leave the checklist |
+
+Selections survive filtering, so you can search `auth`, tick one session, search `deploy`, tick another, and delete both at once.
 
 ```
 /delete-session list
 
   Sessions in this project
-  ❯ [x] Fix auth bug             (current) — 5m ago · 18 msg
-    [ ] deploy script                      — 2h ago · 31 msg
-    [ ] untitled                           — 3d ago · 4 msg
-
-  1 selected of 3 · space toggle · a all · enter delete · esc cancel
+  ⌕ deploy▌
+  ────────────────────────────
+    [x] Deploy script (current) — 5m ago · 18 msg
+    [ ] deploy hotfix notes     — 2h ago · 31 msg
+  2 of 7 shown
+  1 selected · searching · ↑↓ move · tab: select mode · enter: delete 1 · esc: clear
 ```
 
 ## What happens on delete
@@ -50,6 +63,7 @@ Checklist keys: `↑`/`↓` (or `k`/`j`) move, `space` toggles, `a` selects all,
 
 - Deleting sessions is permanent from Pi's point of view. Prefer `/export` if you might want the transcript later.
 - `/delete-session list` reads sessions through Pi's own `SessionManager`, so custom `sessionDir` settings and project grouping behave exactly like `/resume`.
+- The search field is Pi's own `Input` component, so typing, pasting, word-delete, and IME behavior match the rest of the terminal UI.
 
 ## Development
 

@@ -194,15 +194,39 @@ test("deleteSessionsWithPicker starts a new session when the active session is s
 	assert.match(notifications.at(-1)?.message ?? "", /2 sessions deleted \(a new session is active\)/);
 });
 
-test("deleteSessionsWithPicker reports an empty query match", async () => {
+test("deleteSessionsWithPicker reports an empty query match outside the TUI", async () => {
 	const dir = tempDir();
 	const path = makeSessionFile(dir, "one.jsonl");
-	const { host, notifications } = createHarness({ sessions: [makeSession(path, { name: "alpha" })] });
+	const { host, notifications } = createHarness({
+		mode: "json",
+		sessions: [makeSession(path, { name: "alpha" })],
+	});
 
 	await deleteSessionsWithPicker(host, { scope: "project", query: "zzz" });
 
 	assert.equal(existsSync(path), true);
 	assert.match(notifications.at(-1)?.message ?? "", /No sessions match/);
+});
+
+test("deleteSessionsWithPicker hands the TUI every session plus the search text", async () => {
+	const dir = tempDir();
+	const first = makeSessionFile(dir, "first.jsonl");
+	const second = makeSessionFile(dir, "second.jsonl");
+	const sessions = [makeSession(first, { name: "alpha" }), makeSession(second, { name: "beta" })];
+	const seen: { count: number; query?: string } = { count: -1 };
+	const { host } = createHarness({ sessions });
+	host.pickSessions = async (candidates, options) => {
+		seen.count = candidates.length;
+		seen.query = options.initialQuery;
+		return [second];
+	};
+
+	await deleteSessionsWithPicker(host, { scope: "project", query: "beta" });
+
+	assert.equal(seen.count, 2, "the checklist filters live, so it receives unfiltered candidates");
+	assert.equal(seen.query, "beta");
+	assert.equal(existsSync(second), false);
+	assert.equal(existsSync(first), true);
 });
 
 test("deleteSessionsWithPicker reports nothing selected", async () => {
