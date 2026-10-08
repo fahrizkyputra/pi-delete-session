@@ -1,0 +1,56 @@
+{
+  "name": "@fahrizkyputra/pi-delete-session",
+  "version": "0.1.0",
+  "description": "Delete the active Pi session (and start a fresh one), or multi-select saved sessions to clean up. Confirmation first, trash-safe deletion.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "session",
+    "delete-session",
+    "cleanup",
+    "trash"
+  ],
+  "license": "MIT",
+  "author": "Fahrizky Putra",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fahrizkyputra/pi-delete-session.git"
+  },
+  "homepage": "https://github.com/fahrizkyputra/pi-delete-session#readme",
+  "bugs": {
+    "url": "https://github.com/fahrizkyputra/pi-delete-session/issues"
+  },
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./extensions/delete-session.ts"
+    ]
+  },
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
