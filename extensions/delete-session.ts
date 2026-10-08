@@ -11,6 +11,19 @@ import { type DeleteSessionHost, runDeleteSessionCommand } from "../src/handlers
 import { pickSessionsChecklist } from "../src/pick-sessions.ts";
 import { listSessions } from "../src/session-list.ts";
 
+const STATUS_KEY = "delete-session";
+
+function clearStatus(ctx: ExtensionCommandContext): void {
+	ctx.ui.setStatus(STATUS_KEY, undefined);
+}
+
+/**
+ * Wrap a command context as a host.
+ *
+ * Everything the host does runs against the ctx it was built from. After
+ * `newSession()` that ctx is stale, so any post-replacement work must go
+ * through the host built from the ctx that `withSession` hands back.
+ */
 function hostFromContext(ctx: ExtensionCommandContext): DeleteSessionHost {
 	return {
 		mode: ctx.mode,
@@ -22,20 +35,27 @@ function hostFromContext(ctx: ExtensionCommandContext): DeleteSessionHost {
 		},
 		currentSessionPath: ctx.sessionManager.getSessionFile(),
 		currentSessionEntryCount: ctx.sessionManager.getEntries().length,
-		listSessions: async (scope) =>
-			await listSessions({
-				scope,
-				cwd: ctx.cwd,
-				sessionDir: ctx.sessionManager.getSessionDir(),
-				onProgress: (loaded, total) => ctx.ui.setStatus("delete-session", `Loading sessions ${loaded}/${total}`),
-			}),
+		listSessions: async (scope) => {
+			try {
+				return await listSessions({
+					scope,
+					cwd: ctx.cwd,
+					sessionDir: ctx.sessionManager.getSessionDir(),
+					onProgress: (loaded, total) => ctx.ui.setStatus(STATUS_KEY, `Loading sessions ${loaded}/${total}`),
+				});
+			} finally {
+				clearStatus(ctx);
+			}
+		},
 		startNewSession: async (after) => {
 			const result = await ctx.newSession({
 				withSession: async (freshCtx) => {
+					clearStatus(freshCtx);
 					await after(hostFromContext(freshCtx));
 				},
 			});
-			ctx.ui.setStatus("delete-session", undefined);
+			// Cancelled means no replacement happened, so this ctx is still live.
+			if (result.cancelled) clearStatus(ctx);
 			return { cancelled: result.cancelled };
 		},
 		pickSessions: async (sessions, options) => await pickSessionsChecklist(ctx, sessions, options),
@@ -55,11 +75,9 @@ export default function deleteSessionExtension(pi: ExtensionAPI) {
 			return filtered.length > 0 ? filtered : null;
 		},
 		handler: async (args, ctx) => {
-			try {
-				await runDeleteSessionCommand(hostFromContext(ctx), args);
-			} finally {
-				ctx.ui.setStatus("delete-session", undefined);
-			}
+			// Do not add cleanup that runs after runDeleteSessionCommand: deleting the
+			// active session replaces the context and makes this ctx stale.
+			await runDeleteSessionCommand(hostFromContext(ctx), args);
 		},
 	});
 }
