@@ -29,6 +29,19 @@ mkdirSync(workDir, { recursive: true });
 mkdirSync(sessionDir, { recursive: true });
 
 const sessionFile = join(sessionDir, "2026-01-01T00-00-00_e2e0001.jsonl");
+
+// Subagent data laid out exactly like pi-subagents: child runs beside the session,
+// artifacts in the project's shared folder. A second session's data must survive.
+const childDir = join(sessionDir, "2026-01-01T00-00-00_e2e0001");
+const otherChildDir = join(sessionDir, "2026-01-01T00-00-09_other");
+const artifactsDir = join(sessionDir, "subagent-artifacts");
+for (const [dir, runId] of [[childDir, "run-own"], [otherChildDir, "run-other"]]) {
+	mkdirSync(join(dir, runId, "run-0"), { recursive: true });
+	writeFileSync(join(dir, runId, "run-0", "session.jsonl"), '{"type":"session"}\n');
+	mkdirSync(artifactsDir, { recursive: true });
+	writeFileSync(join(artifactsDir, `${runId}_worker_0_output.md`), "out\n");
+}
+writeFileSync(join(sessionDir, "2026-01-01T00-00-09_other.jsonl"), '{"type":"session","version":3,"id":"other","timestamp":"2026-01-01T00:00:09.000Z","cwd":"/tmp"}\n');
 writeFileSync(
 	sessionFile,
 	[
@@ -135,7 +148,7 @@ function finish(code = 0) {
 	clearTimeout(timer);
 	child.kill("SIGKILL");
 	rmSync(root, { recursive: true, force: true });
-	if (code === 0) console.log("e2e ok: /delete-session removed the active session through the real Pi runtime");
+	if (code === 0) console.log("e2e ok: /delete-session removed the active session and its subagent data, kept another session's");
 	process.exit(code);
 }
 
@@ -156,6 +169,14 @@ setTimeout(() => {
 	if (!confirmed) fail("the confirmation dialog never appeared");
 	if (!promptHandled) fail("the prompt was not handled as an extension command");
 	if (existsSync(sessionFile)) fail(`session file still exists: ${sessionFile}`);
+	if (existsSync(childDir)) fail("the session's subagent runs were left behind");
+	if (existsSync(join(artifactsDir, "run-own_worker_0_output.md"))) fail("the session's subagent artifacts were left behind");
+	if (!existsSync(otherChildDir) || !existsSync(join(artifactsDir, "run-other_worker_0_output.md"))) {
+		fail("another session's subagent data was removed");
+	}
+	if (!notifications.some((text) => /with 1 subagent run/.test(text))) {
+		fail(`no subagent mention in the notification: ${notifications.join(" | ")}`);
+	}
 	if (!notifications.some((text) => /new session is active/i.test(text))) {
 		fail(`no success notification, got: ${notifications.join(" | ")}`);
 	}

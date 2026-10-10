@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -56,6 +56,7 @@ interface MockOptions {
 	selectReplies?: (string | undefined)[];
 	picked?: string[] | undefined;
 	cancelNewSession?: boolean;
+	sessionDirectories?: string[];
 }
 
 function createHarness(options: MockOptions = {}) {
@@ -89,6 +90,7 @@ function createHarness(options: MockOptions = {}) {
 		currentSessionEntryCount: 7,
 		currentSessionName: options.currentSessionName,
 		listSessions: async () => sessions,
+		sessionDirectories: () => options.sessionDirectories ?? [],
 		startNewSession: async (after) => {
 			stats.newSessionCalls++;
 			stats.fileExistedAtNewSession = options.currentSessionPath
@@ -268,8 +270,11 @@ test("deleteSessionsWithPicker falls back to one-by-one dialogs outside the TUI"
 
 test("deleteSessionsWithPicker surfaces deletion failures", async () => {
 	const dir = tempDir();
-	const doomed = join(dir, "not-a-file");
-	mkdirSync(doomed);
+	const locked = join(dir, "locked");
+	mkdirSync(locked);
+	const doomed = join(locked, "doomed.jsonl");
+	writeFileSync(doomed, "{}\n");
+	chmodSync(locked, 0o500);
 	const { host, notifications } = createHarness({
 		sessions: [makeSession(doomed, { name: "doomed" })],
 		picked: [doomed],
@@ -281,6 +286,7 @@ test("deleteSessionsWithPicker surfaces deletion failures", async () => {
 		await deleteSessionsWithPicker(host, { scope: "project" });
 	} finally {
 		process.env.PATH = originalPath;
+		chmodSync(locked, 0o700);
 	}
 
 	assert.equal(notifications.at(-1)?.type, "error");
@@ -419,4 +425,86 @@ test("bulk delete without favorites asks once", async () => {
 	await deleteSessionsWithPicker(host, { scope: "project" });
 
 	assert.equal(confirmTitles.length, 1);
+});
+
+/** Lay out a session the way pi-subagents does: child runs beside it, artifacts in a shared folder. */
+function withSubagents(dir: string, name: string, runIds: string[]): string {
+	const sessionPath = makeSessionFile(dir, `${name}.jsonl`);
+	for (const runId of runIds) {
+		mkdirSync(join(dir, name, runId, "run-0"), { recursive: true });
+		writeFileSync(join(dir, name, runId, "run-0", "session.jsonl"), '{"type":"session"}\n');
+		mkdirSync(join(dir, "subagent-artifacts"), { recursive: true });
+		for (const suffix of ["input.md", "output.md", "meta.json", "transcript.jsonl"]) {
+			writeFileSync(join(dir, "subagent-artifacts", `${runId}_worker_0_${suffix}`), "x\n");
+		}
+	}
+	return sessionPath;
+}
+
+test("deleting the current session removes its subagent runs and only their artifacts", async () => {
+	const dir = tempDir();
+	const current = withSubagents(dir, "2026-01-01T00-00-00_current", ["run-a", "run-b"]);
+	withSubagents(dir, "2026-01-01T00-00-01_other", ["run-c"]);
+	const { host, notifications, confirmTitles } = createHarness({ currentSessionPath: current });
+	const messages: string[] = [];
+	const originalConfirm = host.ui.confirm;
+	host.ui.confirm = async (title, message) => {
+		messages.push(message);
+		return originalConfirm(title, message);
+	};
+
+	await deleteCurrentSession(host);
+
+	assert.equal(confirmTitles.length, 1);
+	assert.match(messages[0] ?? "", /\+ 2 subagent runs/);
+	assert.equal(existsSync(current), false);
+	assert.equal(existsSync(join(dir, "2026-01-01T00-00-00_current")), false, "child sessions removed");
+	assert.equal(existsSync(join(dir, "subagent-artifacts", "run-a_worker_0_output.md")), false, "own artifacts removed");
+	assert.equal(existsSync(join(dir, "subagent-artifacts", "run-c_worker_0_output.md")), true, "other session's artifacts kept");
+	assert.equal(existsSync(join(dir, "2026-01-01T00-00-01_other")), true, "other session's runs kept");
+	assert.match(notifications.at(-1)?.message ?? "", /with 2 subagent runs/);
+});
+
+test("bulk delete removes subagent data of every deleted session", async () => {
+	const dir = tempDir();
+	const first = withSubagents(dir, "2026-01-01T00-00-00_a", ["run-a"]);
+	const second = makeSessionFile(dir, "2026-01-01T00-00-01_b.jsonl");
+	const kept = withSubagents(dir, "2026-01-01T00-00-02_c", ["run-c"]);
+	const messages: string[] = [];
+	const { host } = createHarness({ sessions: [makeSession(first), makeSession(second), makeSession(kept)], picked: [first, second] });
+	const originalConfirm = host.ui.confirm;
+	host.ui.confirm = async (title, message) => {
+		messages.push(message);
+		return originalConfirm(title, message);
+	};
+
+	await deleteSessionsWithPicker(host, { scope: "project" });
+
+	assert.match(messages[0] ?? "", /1 subagent run\(s\) in 1 of these sessions are removed too/);
+	assert.equal(existsSync(join(dir, "2026-01-01T00-00-00_a")), false);
+	assert.equal(existsSync(join(dir, "subagent-artifacts", "run-a_worker_0_meta.json")), false);
+	assert.equal(existsSync(join(dir, "2026-01-01T00-00-02_c")), true);
+	assert.equal(existsSync(join(dir, "subagent-artifacts", "run-c_worker_0_meta.json")), true);
+});
+
+test("/delete-session orphans cleans subagent data whose session is gone", async () => {
+	const dir = tempDir();
+	const gone = withSubagents(dir, "2026-01-01T00-00-00_gone", ["run-x"]);
+	rmSync(gone);
+	withSubagents(dir, "2026-01-01T00-00-01_alive", ["run-y"]);
+	mkdirSync(join(dir, "unrelated-folder"), { recursive: true });
+	const { host, notifications, confirmTitles } = createHarness({ sessionDirectories: [dir] });
+
+	await runDeleteSessionCommand(host, "orphans");
+
+	assert.match(confirmTitles[0] ?? "", /Remove subagent data of 1 deleted session\?/);
+	assert.equal(existsSync(join(dir, "2026-01-01T00-00-00_gone")), false);
+	assert.equal(existsSync(join(dir, "subagent-artifacts", "run-x_worker_0_input.md")), false);
+	assert.equal(existsSync(join(dir, "2026-01-01T00-00-01_alive")), true, "alive session untouched");
+	assert.equal(existsSync(join(dir, "unrelated-folder")), true, "folders without run-N are never touched");
+	assert.match(notifications.at(-1)?.message ?? "", /Removed subagent data of 1 deleted session/);
+
+	const again = createHarness({ sessionDirectories: [dir] });
+	await runDeleteSessionCommand(again.host, "orphans");
+	assert.match(again.notifications.at(-1)?.message ?? "", /No orphaned subagent data/);
 });

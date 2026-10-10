@@ -9,6 +9,13 @@ import { basename } from "node:path";
 import type { SessionInfo } from "@earendil-works/pi-coding-agent";
 import { countFavorites, FAVORITE_MARKER, isFavoriteName, isFavoriteSession } from "./favorites.ts";
 import {
+	deleteSubagentData,
+	findOrphanedSubagentData,
+	findSubagentData,
+	hasSubagentData,
+	type SubagentData,
+} from "./subagent-data.ts";
+import {
 	deleteSessionFile,
 	filterSessions,
 	formatBytes,
@@ -40,6 +47,8 @@ export interface DeleteSessionHost {
 	/** Display name of the active session, marker included. */
 	currentSessionName: string | undefined;
 	listSessions(scope: SessionScope): Promise<SessionInfo[]>;
+	/** Session directories to scan for orphaned subagent data: this project, or every project. */
+	sessionDirectories(scope: SessionScope): string[];
 	/**
 	 * Start a replacement session and run `after` against a fresh host bound to
 	 * it. Used before deleting the active session so Pi stops writing to the file.
@@ -57,12 +66,16 @@ export const HELP_TEXT = [
 	"/delete-session list — pick saved sessions to delete (type to search)",
 	"/delete-session list --all — pick from every project",
 	"/delete-session <query> — open the list with the search pre-filled",
+	"/delete-session orphans [--all] — clean subagent data whose session is already gone",
 	"",
 	"In the list: tab switches between search and selection, space toggles a",
 	"session, `a` toggles everything the search shows, enter deletes.",
 	"",
 	"Sessions marked ★ (favorites from pi-session-favorites) ask for a second",
 	"confirmation before they are removed.",
+	"",
+	"Subagent sessions and artifacts that belong to a deleted session are removed",
+	"with it (pi-subagents stores them next to the session file).",
 	"",
 	"Deletion asks for confirmation first and moves files to the OS trash when",
 	"the `trash` CLI is available. A new session starts when the active session",
@@ -89,6 +102,12 @@ export async function runDeleteSessionCommand(host: DeleteSessionHost, rawArgs: 
 		return;
 	}
 
+	if (head === "orphans" || head === "--orphans") {
+		const scope: SessionScope = tokens.includes("--all") || tokens.includes("-a") ? "all" : "project";
+		await deleteOrphanedSubagentData(host, scope);
+		return;
+	}
+
 	// Any other argument is treated as a search query for the picker.
 	if (tokens.length > 0) {
 		await deleteSessionsWithPicker(host, { scope: "project", query: rawArgs.trim() });
@@ -110,9 +129,11 @@ export async function deleteCurrentSession(host: DeleteSessionHost): Promise<voi
 	}
 
 	const size = sessionFileSize(sessionPath);
+	const subagents = findSubagentData(sessionPath);
 	const detail = [
 		basename(sessionPath),
 		`${host.currentSessionEntryCount} entries${size === undefined ? "" : ` · ${formatBytes(size)}`}`,
+		...(hasSubagentData(subagents) ? [describeSubagentData(subagents)] : []),
 		sessionPath,
 		"",
 		"A new session starts right away.",
@@ -144,7 +165,8 @@ export async function deleteCurrentSession(host: DeleteSessionHost): Promise<voi
 		const deletion = deleteSessionFile(sessionPath);
 		if (deletion.ok) {
 			const how = deletion.method === "trash" ? "moved to trash" : "deleted";
-			fresh.ui.notify(`Session ${how}. A new session is active.`, "info");
+			const extra = hasSubagentData(subagents) ? subagentSuffix(deleteSubagentData(subagents)) : "";
+			fresh.ui.notify(`Session ${how}${extra}. A new session is active.`, "info");
 		} else {
 			fresh.ui.notify(`A new session is active, but deleting the old file failed: ${deletion.error}`, "error");
 		}
@@ -203,9 +225,15 @@ export async function deleteSessionsWithPicker(host: DeleteSessionHost, options:
 		return;
 	}
 
+	const subagentData = new Map(selected.map((session) => [session.path, findSubagentData(session.path)] as const));
+	const withSubagents = [...subagentData.values()].filter(hasSubagentData);
+	const subagentLine =
+		withSubagents.length > 0
+			? `\n${withSubagents.reduce((sum, data) => sum + data.runIds.length, 0)} subagent run(s) in ${withSubagents.length} of these sessions are removed too (${formatBytes(withSubagents.reduce((sum, data) => sum + data.bytes, 0))}).`
+			: "";
 	const confirmed = await host.ui.confirm(
 		`Delete ${selected.length} session${selected.length === 1 ? "" : "s"}?`,
-		summarizeSessions(selected),
+		`${summarizeSessions(selected)}${subagentLine}`,
 	);
 	if (!confirmed) {
 		host.ui.notify("Cancelled. No sessions deleted.", "info");
@@ -237,8 +265,16 @@ export async function deleteSessionsWithPicker(host: DeleteSessionHost, options:
 		const failures: string[] = [];
 		for (const session of selected) {
 			const result = deleteSessionFile(session.path);
-			if (result.ok) deleted++;
-			else failures.push(`${sessionTitle(session, 40)}: ${result.error}`);
+			if (!result.ok) {
+				failures.push(`${sessionTitle(session, 40)}: ${result.error}`);
+				continue;
+			}
+			deleted++;
+			const data = subagentData.get(session.path);
+			if (data && hasSubagentData(data)) {
+				const removed = deleteSubagentData(data);
+				if (!removed.ok) failures.push(`${sessionTitle(session, 40)} subagents: ${removed.failures.join(", ")}`);
+			}
 		}
 		return { deleted, failures };
 	};
@@ -298,4 +334,55 @@ function reportDeletions(
 
 	const type = failures.length > 0 ? (deleted === 0 ? "error" : "warning") : "info";
 	ui.notify(parts.join(". "), type);
+}
+
+function describeSubagentData(data: SubagentData): string {
+	const runs = data.runIds.length;
+	return `+ ${runs} subagent run${runs === 1 ? "" : "s"} (${formatBytes(data.bytes)}) — removed with the session`;
+}
+
+function subagentSuffix(result: { ok: boolean; removedRuns: number; failures: string[] }): string {
+	if (!result.ok) return `, but some subagent data could not be removed (${result.failures.join("; ")})`;
+	return result.removedRuns > 0 ? ` with ${result.removedRuns} subagent run${result.removedRuns === 1 ? "" : "s"}` : "";
+}
+
+/** Subagent folders left behind by sessions deleted before this cleanup existed. */
+export async function deleteOrphanedSubagentData(host: DeleteSessionHost, scope: SessionScope): Promise<void> {
+	if (!host.hasUI) {
+		host.ui.notify("/delete-session orphans needs an interactive confirmation. Run it in the TUI.", "warning");
+		return;
+	}
+	const orphans = findOrphanedSubagentData(host.sessionDirectories(scope));
+	if (orphans.length === 0) {
+		host.ui.notify("No orphaned subagent data found.", "info");
+		return;
+	}
+	const runs = orphans.reduce((sum, orphan) => sum + orphan.runIds.length, 0);
+	const bytes = orphans.reduce((sum, orphan) => sum + orphan.bytes, 0);
+	const lines = orphans.slice(0, 10).map((orphan) => `• ${basename(orphan.missingSession)} — ${orphan.runIds.length} run(s), ${formatBytes(orphan.bytes)}`);
+	if (orphans.length > 10) lines.push(`… and ${orphans.length - 10} more`);
+	const confirmed = await host.ui.confirm(
+		`Remove subagent data of ${orphans.length} deleted session${orphans.length === 1 ? "" : "s"}?`,
+		[
+			...lines,
+			"",
+			`${runs} subagent run(s), ${formatBytes(bytes)}. Their parent sessions no longer exist.`,
+			"Files go to the OS trash when the `trash` CLI is available.",
+		].join("\n"),
+	);
+	if (!confirmed) {
+		host.ui.notify("Cancelled. Nothing removed.", "info");
+		return;
+	}
+	const failures: string[] = [];
+	for (const orphan of orphans) {
+		const result = deleteSubagentData(orphan);
+		if (!result.ok) failures.push(...result.failures);
+	}
+	host.ui.notify(
+		failures.length === 0
+			? `Removed subagent data of ${orphans.length} deleted session${orphans.length === 1 ? "" : "s"} (${runs} runs, ${formatBytes(bytes)}).`
+			: `Removed with errors: ${failures.join("; ")}`,
+		failures.length === 0 ? "info" : "warning",
+	);
 }

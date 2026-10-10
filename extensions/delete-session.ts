@@ -6,6 +6,9 @@
  * `trash` CLI is available.
  */
 
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type DeleteSessionHost, runDeleteSessionCommand } from "../src/handlers.ts";
 import { pickSessionsChecklist } from "../src/pick-sessions.ts";
@@ -36,6 +39,25 @@ function hostFromContext(ctx: ExtensionCommandContext): DeleteSessionHost {
 		currentSessionPath: ctx.sessionManager.getSessionFile(),
 		currentSessionEntryCount: ctx.sessionManager.getEntries().length,
 		currentSessionName: ctx.sessionManager.getSessionName(),
+		sessionDirectories: (scope) => {
+			const projectDir = ctx.sessionManager.getSessionDir();
+			if (scope === "project") return [projectDir];
+			const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+			const root = join(agentDir, "sessions");
+			const candidates = new Set<string>([projectDir]);
+			for (const base of [root, dirname(projectDir)]) {
+				if (!existsSync(base)) continue;
+				for (const entry of readdirSync(base)) {
+					const path = join(base, entry);
+					try {
+						if (statSync(path).isDirectory()) candidates.add(path);
+					} catch {
+						// unreadable entries are skipped
+					}
+				}
+			}
+			return [...candidates];
+		},
 		listSessions: async (scope) => {
 			try {
 				return await listSessions({
@@ -70,6 +92,8 @@ export default function deleteSessionExtension(pi: ExtensionAPI) {
 			const options = [
 				{ value: "list", label: "list — pick saved sessions to delete" },
 				{ value: "list --all", label: "list --all — pick from every project" },
+				{ value: "orphans", label: "orphans — clean subagent data left by deleted sessions" },
+				{ value: "orphans --all", label: "orphans --all — same, across every project" },
 				{ value: "help", label: "help — usage" },
 			];
 			const filtered = options.filter((option) => option.value.startsWith(prefix));

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -73,15 +73,30 @@ test("deleteSessionFile falls back to unlink when trash is unavailable", () => {
 
 test("deleteSessionFile fails cleanly when the path cannot be unlinked", () => {
 	const dir = tempDir();
+	const locked = join(dir, "locked");
+	mkdirSync(locked);
+	const path = join(locked, "session.jsonl");
+	writeFileSync(path, "{}\n");
+	chmodSync(locked, 0o500); // no write permission on the parent: unlink fails
 	const originalPath = process.env.PATH;
 	process.env.PATH = "/nonexistent-bin";
 	try {
-		const result = deleteSessionFile(dir);
+		const result = deleteSessionFile(path);
 		assert.equal(result.ok, false);
 		assert.equal(typeof result.error, "string");
 	} finally {
 		process.env.PATH = originalPath;
+		chmodSync(locked, 0o700);
 	}
+});
+
+test("deleteSessionFile removes a directory when trash is unavailable", () => {
+	const dir = join(tempDir(), "subagent-folder");
+	mkdirSync(join(dir, "run-0"), { recursive: true });
+	writeFileSync(join(dir, "run-0", "session.jsonl"), "{}\n");
+	const result = deleteSessionFile(dir, { useTrash: false });
+	assert.equal(result.ok, true);
+	assert.equal(existsSync(dir), false);
 });
 
 test("isSamePath resolves symlinks", () => {

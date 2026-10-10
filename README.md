@@ -24,6 +24,7 @@ pi -e npm:@fahrizkyputra/pi-delete-session
 | `/delete-session list` | Opens a searchable checklist of sessions in the current project |
 | `/delete-session list --all` | Same checklist, across every project |
 | `/delete-session <query>` | Opens the checklist with the search already filled in |
+| `/delete-session orphans` | Removes subagent data whose parent session is already gone (`--all` for every project) |
 | `/delete-session help` | Prints the usage summary |
 
 ### Checklist keys
@@ -56,6 +57,7 @@ Selections survive filtering, so you can search `auth`, tick one session, search
 
 - **Confirmation first.** The current-session dialog shows the session file, its entry count, and its size. Bulk delete lists every selected session before touching anything.
 - **Favorites are protected by a second question.** Sessions marked `★` (see [`pi-session-favorites`](https://pi.dev/packages/@fahrizkyputra/pi-session-favorites)) trigger another confirmation before they are removed; declining it cancels the whole deletion, so nothing is lost by accident.
+- **Subagent data goes with the session.** [pi-subagents](https://pi.dev/packages/pi-subagents) stores child sessions next to the parent (`<session>/<runId>/run-N/session.jsonl`) and prompts, outputs, and transcripts in the project's shared `subagent-artifacts/`. Deleting a session removes its own child runs and only the artifacts with its run ids; other sessions' data stays. The confirmation dialog shows how many subagent runs are included.
 - **Trash-safe.** Files are moved to the OS trash with the `trash` CLI when it is installed, and unlinked otherwise. Same behavior as Pi's built-in picker.
 - **No orphan writes.** When the active session is deleted, a new session starts *first*, so Pi never re-creates the file you just deleted.
 - **Works without a TUI.** In RPC mode the bulk flow falls back to one-by-one selection dialogs.

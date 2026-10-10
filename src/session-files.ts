@@ -6,7 +6,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import type { SessionInfo } from "@earendil-works/pi-coding-agent";
 
@@ -53,7 +53,9 @@ export function deleteSessionFile(
 	}
 
 	try {
-		unlinkSync(sessionPath);
+		// Subagent data folders are directories; session files are not.
+		if (statSync(sessionPath).isDirectory()) rmSync(sessionPath, { recursive: true, force: true });
+		else unlinkSync(sessionPath);
 		return { ok: true, method: "unlink" };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
