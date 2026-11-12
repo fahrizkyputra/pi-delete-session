@@ -15,6 +15,7 @@ import {
 	hasSubagentData,
 	type SubagentData,
 } from "./subagent-data.ts";
+import { deleteOwnedShots, findOwnedShots, orphanedShotOwners, type OwnedShots, type ShotsLocations } from "./shots.ts";
 import {
 	deleteSessionFile,
 	filterSessions,
@@ -54,6 +55,8 @@ export interface DeleteSessionHost {
 	 * it. Used before deleting the active session so Pi stops writing to the file.
 	 */
 	startNewSession(after: (fresh: DeleteSessionHost) => Promise<void>): Promise<{ cancelled: boolean }>;
+	/** Where screenshots and their ownership records live; undefined disables photo cleanup. */
+	shots?: ShotsLocations;
 	/** Interactive multi-select picker. Only called in TUI mode. */
 	pickSessions(
 		sessions: SessionInfo[],
@@ -76,6 +79,10 @@ export const HELP_TEXT = [
 	"",
 	"Subagent sessions and artifacts that belong to a deleted session are removed",
 	"with it (pi-subagents stores them next to the session file).",
+	"",
+	"Screenshots the session saved in ~/.agent-browser/shots go with it too, but only",
+	"the ones recorded as made by that session, unchanged since, and not also made by",
+	"a session you keep. Older photos and anything else in that folder are never touched.",
 	"",
 	"Deletion asks for confirmation first and moves files to the OS trash when",
 	"the `trash` CLI is available. A new session starts when the active session",
@@ -130,10 +137,12 @@ export async function deleteCurrentSession(host: DeleteSessionHost): Promise<voi
 
 	const size = sessionFileSize(sessionPath);
 	const subagents = findSubagentData(sessionPath);
+	const shots = host.shots ? findOwnedShots(host.shots, [sessionPath]) : undefined;
 	const detail = [
 		basename(sessionPath),
 		`${host.currentSessionEntryCount} entries${size === undefined ? "" : ` · ${formatBytes(size)}`}`,
 		...(hasSubagentData(subagents) ? [describeSubagentData(subagents)] : []),
+		...describeShots(shots),
 		sessionPath,
 		"",
 		"A new session starts right away.",
@@ -166,7 +175,8 @@ export async function deleteCurrentSession(host: DeleteSessionHost): Promise<voi
 		if (deletion.ok) {
 			const how = deletion.method === "trash" ? "moved to trash" : "deleted";
 			const extra = hasSubagentData(subagents) ? subagentSuffix(deleteSubagentData(subagents)) : "";
-			fresh.ui.notify(`Session ${how}${extra}. A new session is active.`, "info");
+			const photos = host.shots && shots ? shotsSuffix(deleteOwnedShots(host.shots, [sessionPath], shots)) : "";
+			fresh.ui.notify(`Session ${how}${extra}${photos}. A new session is active.`, "info");
 		} else {
 			fresh.ui.notify(`A new session is active, but deleting the old file failed: ${deletion.error}`, "error");
 		}
@@ -231,9 +241,11 @@ export async function deleteSessionsWithPicker(host: DeleteSessionHost, options:
 		withSubagents.length > 0
 			? `\n${withSubagents.reduce((sum, data) => sum + data.runIds.length, 0)} subagent run(s) in ${withSubagents.length} of these sessions are removed too (${formatBytes(withSubagents.reduce((sum, data) => sum + data.bytes, 0))}).`
 			: "";
+	const shots = host.shots ? findOwnedShots(host.shots, selected.map((session) => session.path)) : undefined;
+	const shotsLines = describeShots(shots);
 	const confirmed = await host.ui.confirm(
 		`Delete ${selected.length} session${selected.length === 1 ? "" : "s"}?`,
-		`${summarizeSessions(selected)}${subagentLine}`,
+		`${summarizeSessions(selected)}${subagentLine}${shotsLines.length > 0 ? `\n${shotsLines.join("\n")}` : ""}`,
 	);
 	if (!confirmed) {
 		host.ui.notify("Cancelled. No sessions deleted.", "info");
@@ -260,9 +272,10 @@ export async function deleteSessionsWithPicker(host: DeleteSessionHost, options:
 	const includesCurrent =
 		currentPath !== undefined && selected.some((session) => isSamePath(session.path, currentPath));
 
-	const runDeletes = (): { deleted: number; failures: string[] } => {
+	const runDeletes = (): { deleted: number; failures: string[]; photos: string } => {
 		let deleted = 0;
 		const failures: string[] = [];
+		const deletedPaths: string[] = [];
 		for (const session of selected) {
 			const result = deleteSessionFile(session.path);
 			if (!result.ok) {
@@ -270,19 +283,26 @@ export async function deleteSessionsWithPicker(host: DeleteSessionHost, options:
 				continue;
 			}
 			deleted++;
+			deletedPaths.push(session.path);
 			const data = subagentData.get(session.path);
 			if (data && hasSubagentData(data)) {
 				const removed = deleteSubagentData(data);
 				if (!removed.ok) failures.push(`${sessionTitle(session, 40)} subagents: ${removed.failures.join(", ")}`);
 			}
 		}
-		return { deleted, failures };
+		// Only photos of sessions that really went: a session whose file could not be removed keeps them.
+		let photos = "";
+		if (host.shots && shots && deletedPaths.length > 0) {
+			const owned = deletedPaths.length === selected.length ? shots : findOwnedShots(host.shots, deletedPaths);
+			photos = shotsSuffix(deleteOwnedShots(host.shots, deletedPaths, owned));
+		}
+		return { deleted, failures, photos };
 	};
 
 	if (includesCurrent) {
 		const result = await host.startNewSession(async (fresh) => {
-			const { deleted, failures } = runDeletes();
-			reportDeletions(fresh.ui, deleted, failures, true);
+			const { deleted, failures, photos } = runDeletes();
+			reportDeletions(fresh.ui, deleted, failures, true, photos);
 		});
 		if (result.cancelled) {
 			host.ui.notify("Session replacement was cancelled. Nothing was deleted.", "warning");
@@ -290,8 +310,8 @@ export async function deleteSessionsWithPicker(host: DeleteSessionHost, options:
 		return;
 	}
 
-	const { deleted, failures } = runDeletes();
-	reportDeletions(host.ui, deleted, failures, false);
+	const { deleted, failures, photos } = runDeletes();
+	reportDeletions(host.ui, deleted, failures, false, photos);
 }
 
 /** Non-TUI fallback: one session per dialog, repeat until the user stops. */
@@ -322,11 +342,12 @@ function reportDeletions(
 	deleted: number,
 	failures: string[],
 	includesCurrent: boolean,
+	photos = "",
 ): void {
 	const parts: string[] = [];
 	if (deleted > 0) {
 		const suffix = includesCurrent ? " (a new session is active)" : "";
-		parts.push(`${deleted} session${deleted === 1 ? "" : "s"} deleted${suffix}`);
+		parts.push(`${deleted} session${deleted === 1 ? "" : "s"} deleted${photos}${suffix}`);
 	} else {
 		parts.push("No sessions deleted");
 	}
@@ -341,6 +362,27 @@ function describeSubagentData(data: SubagentData): string {
 	return `+ ${runs} subagent run${runs === 1 ? "" : "s"} (${formatBytes(data.bytes)}) — removed with the session`;
 }
 
+function describeShots(shots: OwnedShots | undefined): string[] {
+	if (!shots) return [];
+	const lines: string[] = [];
+	const count = shots.files.length;
+	if (count > 0) lines.push(`+ ${count} photo${count === 1 ? "" : "s"} in ~/.agent-browser/shots (${formatBytes(shots.bytes)}) — made by this session, removed with it`);
+	const kept = shots.keptShared + shots.keptChanged;
+	if (kept > 0) {
+		const why = [
+			shots.keptShared > 0 ? `${shots.keptShared} also made by a session you keep` : "",
+			shots.keptChanged > 0 ? `${shots.keptChanged} changed since` : "",
+		].filter(Boolean);
+		lines.push(`  ${kept} other photo${kept === 1 ? "" : "s"} stay (${why.join(", ")})`);
+	}
+	return lines;
+}
+
+function shotsSuffix(result: { removed: number; failures: string[] }): string {
+	if (result.failures.length > 0) return `, but ${result.failures.length} photo(s) could not be removed (${result.failures.join("; ")})`;
+	return result.removed > 0 ? `, ${result.removed} photo${result.removed === 1 ? "" : "s"}` : "";
+}
+
 function subagentSuffix(result: { ok: boolean; removedRuns: number; failures: string[] }): string {
 	if (!result.ok) return `, but some subagent data could not be removed (${result.failures.join("; ")})`;
 	return result.removedRuns > 0 ? ` with ${result.removedRuns} subagent run${result.removedRuns === 1 ? "" : "s"}` : "";
@@ -353,8 +395,15 @@ export async function deleteOrphanedSubagentData(host: DeleteSessionHost, scope:
 		return;
 	}
 	const orphans = findOrphanedSubagentData(host.sessionDirectories(scope));
-	if (orphans.length === 0) {
-		host.ui.notify("No orphaned subagent data found.", "info");
+	// Photos recorded by sessions whose file is already gone (deleted with another tool, or
+	// before this cleanup ran). Scoped like the subagent data: this project, or every project.
+	const directories = host.sessionDirectories(scope);
+	const goneOwners = host.shots
+		? orphanedShotOwners(host.shots).filter((owner) => scope === "all" || directories.some((dir) => owner.startsWith(dir)))
+		: [];
+	const orphanShots = host.shots && goneOwners.length > 0 ? findOwnedShots(host.shots, goneOwners) : undefined;
+	if (orphans.length === 0 && !orphanShots?.files.length) {
+		host.ui.notify("No orphaned subagent data or photos found.", "info");
 		return;
 	}
 	const runs = orphans.reduce((sum, orphan) => sum + orphan.runIds.length, 0);
@@ -362,11 +411,13 @@ export async function deleteOrphanedSubagentData(host: DeleteSessionHost, scope:
 	const lines = orphans.slice(0, 10).map((orphan) => `• ${basename(orphan.missingSession)} — ${orphan.runIds.length} run(s), ${formatBytes(orphan.bytes)}`);
 	if (orphans.length > 10) lines.push(`… and ${orphans.length - 10} more`);
 	const confirmed = await host.ui.confirm(
-		`Remove subagent data of ${orphans.length} deleted session${orphans.length === 1 ? "" : "s"}?`,
+		orphans.length > 0
+			? `Remove subagent data of ${orphans.length} deleted session${orphans.length === 1 ? "" : "s"}?`
+			: "Remove photos of deleted sessions?",
 		[
 			...lines,
-			"",
-			`${runs} subagent run(s), ${formatBytes(bytes)}. Their parent sessions no longer exist.`,
+			...(orphans.length > 0 ? ["", `${runs} subagent run(s), ${formatBytes(bytes)}. Their parent sessions no longer exist.`] : []),
+			...describeShots(orphanShots),
 			"Files go to the OS trash when the `trash` CLI is available.",
 		].join("\n"),
 	);
@@ -379,9 +430,15 @@ export async function deleteOrphanedSubagentData(host: DeleteSessionHost, scope:
 		const result = deleteSubagentData(orphan);
 		if (!result.ok) failures.push(...result.failures);
 	}
+	let photos = "";
+	if (host.shots && orphanShots) {
+		const result = deleteOwnedShots(host.shots, goneOwners, orphanShots);
+		failures.push(...result.failures);
+		photos = result.removed > 0 ? `, ${result.removed} photo${result.removed === 1 ? "" : "s"}` : "";
+	}
 	host.ui.notify(
 		failures.length === 0
-			? `Removed subagent data of ${orphans.length} deleted session${orphans.length === 1 ? "" : "s"} (${runs} runs, ${formatBytes(bytes)}).`
+			? `Removed subagent data of ${orphans.length} deleted session${orphans.length === 1 ? "" : "s"} (${runs} runs, ${formatBytes(bytes)})${photos}.`
 			: `Removed with errors: ${failures.join("; ")}`,
 		failures.length === 0 ? "info" : "warning",
 	);

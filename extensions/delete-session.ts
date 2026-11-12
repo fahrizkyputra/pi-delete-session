@@ -13,6 +13,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { type DeleteSessionHost, runDeleteSessionCommand } from "../src/handlers.ts";
 import { pickSessionsChecklist } from "../src/pick-sessions.ts";
 import { listSessions } from "../src/session-list.ts";
+import { type Snapshot, changedShots, defaultShotsLocations, namedByCall, recordShots, snapshotShots } from "../src/shots.ts";
 
 const STATUS_KEY = "delete-session";
 
@@ -82,10 +83,52 @@ function hostFromContext(ctx: ExtensionCommandContext): DeleteSessionHost {
 			return { cancelled: result.cancelled };
 		},
 		pickSessions: async (sessions, options) => await pickSessionsChecklist(ctx, sessions, options),
+		shots: defaultShotsLocations(),
 	};
 }
 
+function textOf(value: unknown): string {
+	if (typeof value === "string") return value;
+	if (Array.isArray(value)) return value.map((part) => (part && typeof part === "object" && "text" in part ? String((part as { text: unknown }).text ?? "") : "")).join("\n");
+	return "";
+}
+
 export default function deleteSessionExtension(pi: ExtensionAPI) {
+	// Record which session made each screenshot: the shots folder before a tool call, and the
+	// images that appeared or changed by its end, when the call itself names them.
+	const shots = defaultShotsLocations();
+	const before = new Map<string, Snapshot>();
+
+	pi.on?.("tool_call", (event) => {
+		try {
+			before.set(event.toolCallId, snapshotShots(shots.shotsDir));
+		} catch {
+			// recording is best effort; it must never get in the way of a tool
+		}
+		return undefined;
+	});
+
+	pi.on?.("tool_result", (event, ctx) => {
+		const snapshot = before.get(event.toolCallId);
+		before.delete(event.toolCallId);
+		if (!snapshot) return undefined;
+		try {
+			const sessionPath = ctx.sessionManager.getSessionFile();
+			if (!sessionPath) return undefined;
+			const changed = changedShots(snapshot, snapshotShots(shots.shotsDir));
+			if (changed.length === 0) return undefined;
+			const callText = `${JSON.stringify(event.input ?? {})}\n${textOf(event.content)}`;
+			recordShots(shots, sessionPath, namedByCall(changed, shots.shotsDir, callText));
+		} catch {
+			// best effort, see above
+		}
+		return undefined;
+	});
+
+	pi.on?.("session_shutdown", () => {
+		before.clear();
+	});
+
 	pi.registerCommand("delete-session", {
 		description: "Delete the current session, or pick saved sessions to delete",
 		getArgumentCompletions: (prefix) => {

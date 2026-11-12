@@ -24,7 +24,7 @@ pi -e npm:@fahrizkyputra/pi-delete-session
 | `/delete-session list` | Opens a searchable checklist of sessions in the current project |
 | `/delete-session list --all` | Same checklist, across every project |
 | `/delete-session <query>` | Opens the checklist with the search already filled in |
-| `/delete-session orphans` | Removes subagent data whose parent session is already gone (`--all` for every project) |
+| `/delete-session orphans` | Removes subagent data, and recorded screenshots, whose session is already gone (`--all` for every project) |
 | `/delete-session help` | Prints the usage summary |
 
 ### Checklist keys
@@ -57,6 +57,7 @@ Selections survive filtering, so you can search `auth`, tick one session, search
 
 - **Confirmation first.** The current-session dialog shows the session file, its entry count, and its size. Bulk delete lists every selected session before touching anything.
 - **Favorites are protected by a second question.** Sessions marked `★` (see [`pi-session-favorites`](https://pi.dev/packages/@fahrizkyputra/pi-session-favorites)) trigger another confirmation before they are removed; declining it cancels the whole deletion, so nothing is lost by accident.
+- **Screenshots the session made go with it.** Photos saved under `~/.agent-browser/shots` (by the `agent-browser` CLI, a UI-screenshot skill, or any tool call) are recorded for the session that made them, at the moment they are made: the folder is compared before and after each tool call, and an image counts only when that call itself names it. A photo is removed with a session only when every session that made it is being deleted (a shared photo waits for its last owner) and it is unchanged since it was recorded. Photos made before this version, by another program, or changed since are never touched, and neither is anything that is not an image or lies outside that folder. The confirmation dialog shows how many photos go and how many stay. Records live in `~/.pi/agent/delete-session/shots/`.
 - **Subagent data goes with the session.** [pi-subagents](https://pi.dev/packages/pi-subagents) stores child sessions next to the parent (`<session>/<runId>/run-N/session.jsonl`) and prompts, outputs, and transcripts in the project's shared `subagent-artifacts/`. Deleting a session removes its own child runs and only the artifacts with its run ids; other sessions' data stays. The confirmation dialog shows how many subagent runs are included.
 - **Trash-safe.** Files are moved to the OS trash with the `trash` CLI when it is installed, and unlinked otherwise. Same behavior as Pi's built-in picker.
 - **No orphan writes.** When the active session is deleted, a new session starts *first*, so Pi never re-creates the file you just deleted.
